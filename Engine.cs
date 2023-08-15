@@ -9,20 +9,14 @@ public class Engine
     long _rngSeed;
     Tokenizer tokenizer;
     Model model;
-    void ErrorUsage()
-    {
-        Console.WriteLine("Usage:   run <checkpoint> [options]");
-        Console.WriteLine("Example: run model.bin -n 256 -i \"Once upon a time\"");
-        Console.WriteLine("Options:");
-        Console.WriteLine("  -t <float>  temperature, default 1.0");
-        Console.WriteLine("  -p <float>  p value in top-p (nucleus) sampling. default 0.9, 0 = off");
-        Console.WriteLine("  -s <int>    random seed, default time(NULL)");
-        Console.WriteLine("  -n <int>    number of steps to run for, default 256. 0 = max_seq_len");
-        Console.WriteLine("  -i <string> input prompt");
-    }
-    public void Run(
-        float temperature = 1.0f, float topp = 0.9f, int rngSeed = 1, int steps = 256, string prompt = "what's your name?",
-        string checkpoint = @"D:\ai.study\llama2.cs-main\stories15M.bin")
+    Config config;
+    float temperature = 1.0f;
+    float topp = 0.9f;
+    int rngSeed = 1;
+    int steps = 256;
+    string checkpoint = @"D:\ai.study\llama2.cs-main\stories15M.bin";
+    int configVocabSize;
+    public void Setup()
     {
         SetSeed((uint)DateTime.UtcNow.Ticks);
         if (_rngSeed == 0)
@@ -34,37 +28,41 @@ public class Engine
         model.LoadModel(checkpoint);
 
         // read in the model.bin file
-        Config config = model.config;
-
+        config = model.config;
+        configVocabSize = config.vocab_size;
         // right now we cannot run for more than config.seq_len steps
         if (steps <= 0 || steps > config.seq_len) steps = config.seq_len;
         tokenizer = new Tokenizer(config);
         tokenizer.LoadVocab();
+    }
+
+    public void Run(string prompt = "what's your name?")
+    {
         // create and init the application RunState
         RunState state = config.InitializeRunState();
-
         // process the prompt, if any
         (int[]? promptTokens, int numPromptTokens) = tokenizer.EncodePrompt(prompt);
-
         // start the main loop
         int token = 1; // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
         int pos = 0; // position in the sequence
         Stopwatch timer = new Stopwatch();
         timer.Start();
-
         while (pos < steps)
         {
             // forward the transformer to get logits for the next token
+            //转发transformer以获取下一个令牌的logits
             Transformer(token, pos, state);
 
-            // advance the state state machine
-            int next; // will store the next token in the sequence
+            // advance the state state machine推进状态机
+            int next; // will store the next token in the sequence将存储序列中的下一个令牌
+            #region 原样将输入内容输出
             if (pos < numPromptTokens)
             {
                 //如果我们仍在处理输入提示，请强制使用下一个提示标记
                 // if we are still processing the input prompt, force the next prompt token
                 next = promptTokens![pos];
             }
+            #endregion
             else
             {
                 //对下一个令牌进行采样
@@ -73,7 +71,7 @@ public class Engine
                 {
                     //贪婪argmax采样：取概率最高的令牌
                     // greedy argmax sampling: take the token with the highest probability
-                    next = Argmax(state.logits, config.vocab_size);
+                    next = Argmax(state.logits);
                 }
                 else
                 {
@@ -82,33 +80,36 @@ public class Engine
                     for (int q = 0; q < config.vocab_size; q++) state.logits[q] /= temperature;
                     //将softmax应用于logits以获得下一个令牌的概率
                     // apply softmax to the logits to get the probabilities for next token
-                    Softmax(state.logits, 0, config.vocab_size);
+                    Softmax(state.logits, 0, configVocabSize);
                     //我们从这个分布中采样以获得下一个令牌
                     // we sample from this distribution to get the next token
                     if (topp <= 0)
                         //从预测的概率分布中简单采样
                         // simply sample from the predicted probability distribution
-                        next = Sample(state.logits, config.vocab_size);
+                        next = Sample(state.logits);
                     else
                         //top-p（nucleus）采样，将最不可能的标记箝位为零
                         // top-p (nucleus) sampling, clamping the least likely tokens to zero
-                        next = SampleTopp(state.logits, config.vocab_size, topp, state.probindex);
+                        next = SampleTopp(state.logits, state.probindex);
                 }
             }
 
             pos++;
+
+            #region 结束退出
             //依赖于数据的终止条件：BOS（1）标记对序列进行定界
             // data-dependent terminating condition: the BOS (1) token delimits sequences
             if (next == 1) break;
+            #endregion
 
-            // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
-            //在BOS（1）标记之后，句子段解码器去除任何前导空格（参见PR#89）
-            string tokenStr = token == 1 && tokenizer.vocab[next][0] == ' ' ? tokenizer.vocab[next].TrimStart() : tokenizer.vocab[next];
+            #region 输出结果
+            string tokenStr = tokenizer.Decode(token, next);// token == 1 && tokenizer.vocab[next][0] == ' ' ? tokenizer.vocab[next].TrimStart() : tokenizer.vocab[next];
             Console.Write(tokenStr);
             token = next;
+            #endregion
         }
 
-        timer.Start();
+        timer.Stop();
         Console.WriteLine();
 
         // report achieved tok/s (pos-1 because the timer starts after first iteration)
@@ -138,7 +139,7 @@ public class Engine
         return (RandomU32() >>> 8) / 16777216.0f;
     }
 
-    private static int Argmax(float[] probabilities, int configVocabSize)
+    private int Argmax(float[] probabilities)
     {
         int maxI = 0;
         float maxP = probabilities[0];
@@ -153,7 +154,7 @@ public class Engine
     }
 
 
-    int Sample(float[] probabilities, int configVocabSize)
+    int Sample(float[] probabilities)
     {
         float r = RandomF32();
         float cdf = 0.0f;
@@ -173,7 +174,7 @@ public class Engine
         return 0;
     }
 
-    int SampleTopp(float[] probabilities, int configVocabSize, float topp, ProbIndex[] probindex)
+    int SampleTopp(float[] probabilities, ProbIndex[] probindex)
     {
         for (int i = 0; i < configVocabSize; i++)
         {
@@ -225,7 +226,7 @@ public class Engine
         for (int j = 0; j < size; j++) o[j] = weight[j] * (ss * x[j]);
     }
 
-    private static void Softmax(float[] x, int xOffset, int size)
+    private void Softmax(float[] x, int xOffset, int size)
     {
         // find max value (for numerical stability)
         float maxVal = x[0 + xOffset];

@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using static System.Net.Mime.MediaTypeNames;
 #pragma warning disable CA2014
 
 namespace llama2.cs;
@@ -57,6 +58,19 @@ public class Tokenizer
         }
         return (promptTokens, numPromptTokens);
     }
+    public string Decode(int token, int next)
+    {
+        // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
+        //在BOS（1）标记之后，句子段解码器去除任何前导空格（参见PR#89）
+        var nxt = vocab[next];
+        if (token == 1 && nxt[0] == ' ')
+        {
+            return nxt.TrimStart();
+        }
+        return nxt;
+        //return token == 1 && vocab[next][0] == ' ' ? vocab[next].TrimStart() : vocab[next];
+    }
+
     private static void BpeEncode(string text, string[] vocab, float[] vocabScores, int vocabSize, int maxTokenLength,
         ref int[] tokens, ref int nTokens)
     {
