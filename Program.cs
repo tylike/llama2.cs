@@ -10,8 +10,68 @@ namespace llama2.cs;
 [SuppressMessage("ReSharper", "StackAllocInsideLoop")]
 public static class Program
 {
-    private static long _rngSeed;
+    static (Config config, TransformerWeights weights) LoadModel(string checkpoint)
+    {
+        Config config;
+        TransformerWeights weights;
+        try
+        {
+            using FileStream fileStream = new FileStream(checkpoint, FileMode.Open, FileAccess.Read);
+            // Read in the config header
+            byte[] configBytes = new byte[Marshal.SizeOf(typeof(Config))];
+            if (fileStream.Read(configBytes, 0, configBytes.Length) != configBytes.Length) Environment.Exit(1);
 
+            GCHandle handle = GCHandle.Alloc(configBytes, GCHandleType.Pinned);
+            try
+            {
+                IntPtr pointer = handle.AddrOfPinnedObject();
+                config = (Config)Marshal.PtrToStructure(pointer, typeof(Config))!;
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            // Negative vocab size is a hacky way of signaling unshared weights. Bit yikes.
+            bool sharedWeights = config.vocab_size > 0;
+            config.vocab_size = Math.Abs(config.vocab_size);
+
+            // Figure out the file size
+            var fileSize = fileStream.Length; // size of the checkpoint file in bytes
+
+            using var memoryMappedFile = MemoryMappedFile.CreateFromFile(fileStream, null, fileSize,
+                MemoryMappedFileAccess.Read, HandleInheritability.None, false);
+            long configSizeInBytes = Marshal.SizeOf(typeof(Config));
+            using var accessor = memoryMappedFile.CreateViewAccessor(configSizeInBytes,
+                fileSize - configSizeInBytes, MemoryMappedFileAccess.Read);
+            weights = new TransformerWeights();
+
+            CheckpointInitWeights(ref weights, ref config, accessor, sharedWeights);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new Exception($"Couldn't open file {checkpoint}");
+
+        }
+        catch (Exception e)
+        {
+            throw new Exception($"Couldn't read {checkpoint}: {e.Message}");
+
+        }
+        return (config, weights);
+    }
+    private static long _rngSeed;
+    static void ErrorUsage()
+    {
+        Console.WriteLine("Usage:   run <checkpoint> [options]");
+        Console.WriteLine("Example: run model.bin -n 256 -i \"Once upon a time\"");
+        Console.WriteLine("Options:");
+        Console.WriteLine("  -t <float>  temperature, default 1.0");
+        Console.WriteLine("  -p <float>  p value in top-p (nucleus) sampling. default 0.9, 0 = off");
+        Console.WriteLine("  -s <int>    random seed, default time(NULL)");
+        Console.WriteLine("  -n <int>    number of steps to run for, default 256. 0 = max_seq_len");
+        Console.WriteLine("  -i <string> input prompt");
+    }
     public static void Main(string[] args)
     {
         int argc = args.Length;
@@ -28,18 +88,6 @@ public static class Program
         {
             ErrorUsage();
             //return;
-        }
-
-        void ErrorUsage()
-        {
-            Console.WriteLine("Usage:   run <checkpoint> [options]");
-            Console.WriteLine("Example: run model.bin -n 256 -i \"Once upon a time\"");
-            Console.WriteLine("Options:");
-            Console.WriteLine("  -t <float>  temperature, default 1.0");
-            Console.WriteLine("  -p <float>  p value in top-p (nucleus) sampling. default 0.9, 0 = off");
-            Console.WriteLine("  -s <int>    random seed, default time(NULL)");
-            Console.WriteLine("  -n <int>    number of steps to run for, default 256. 0 = max_seq_len");
-            Console.WriteLine("  -i <string> input prompt");
         }
 
         for (int i = 1; i < argc; i += 2)
@@ -67,54 +115,8 @@ public static class Program
         }
 
         // read in the model.bin file
-        Config config;
-        TransformerWeights weights;
-        {
-            try
-            {
-                using FileStream fileStream = new FileStream(checkpoint, FileMode.Open, FileAccess.Read);
-                // Read in the config header
-                byte[] configBytes = new byte[Marshal.SizeOf(typeof(Config))];
-                if (fileStream.Read(configBytes, 0, configBytes.Length) != configBytes.Length) Environment.Exit(1);
+        (Config config, TransformerWeights weights) = LoadModel(checkpoint);
 
-                GCHandle handle = GCHandle.Alloc(configBytes, GCHandleType.Pinned);
-                try
-                {
-                    IntPtr pointer = handle.AddrOfPinnedObject();
-                    config = (Config)Marshal.PtrToStructure(pointer, typeof(Config))!;
-                }
-                finally
-                {
-                    handle.Free();
-                }
-
-                // Negative vocab size is a hacky way of signaling unshared weights. Bit yikes.
-                bool sharedWeights = config.vocab_size > 0;
-                config.vocab_size = Math.Abs(config.vocab_size);
-
-                // Figure out the file size
-                var fileSize = fileStream.Length; // size of the checkpoint file in bytes
-
-                using var memoryMappedFile = MemoryMappedFile.CreateFromFile(fileStream, null, fileSize,
-                    MemoryMappedFileAccess.Read, HandleInheritability.None, false);
-                long configSizeInBytes = Marshal.SizeOf(typeof(Config));
-                using var accessor = memoryMappedFile.CreateViewAccessor(configSizeInBytes,
-                    fileSize - configSizeInBytes, MemoryMappedFileAccess.Read);
-                weights = new TransformerWeights();
-
-                CheckpointInitWeights(ref weights, ref config, accessor, sharedWeights);
-            }
-            catch (FileNotFoundException)
-            {
-                Console.Error.WriteLine($"Couldn't open file {checkpoint}");
-                return;
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"Couldn't read {checkpoint}: {e.Message}");
-                return;
-            }
-        }
 
         // right now we cannot run for more than config.seq_len steps
         if (steps <= 0 || steps > config.seq_len) steps = config.seq_len;
@@ -152,7 +154,7 @@ public static class Program
 
 
         // create and init the application RunState
-        RunState state = InitializeRunState(config);
+        RunState state = config.InitializeRunState();
 
         // process the prompt, if any
         int[]? promptTokens = null;
@@ -599,28 +601,6 @@ public static class Program
         offset += sizeof(float) * (long)size;
         return array;
     }
-
-
-    private static RunState InitializeRunState(Config cfg)
-    {
-        return new RunState
-        {
-            x = new float[cfg.dim],
-            xb = new float[cfg.dim],
-            xb2 = new float[cfg.dim],
-            hb = new float[cfg.hidden_dim],
-            hb2 = new float[cfg.hidden_dim],
-            q = new float[cfg.dim],
-            k = new float[cfg.dim],
-            v = new float[cfg.dim],
-            att = new float[cfg.n_heads * cfg.seq_len],
-            logits = new float[cfg.vocab_size],
-            probindex = new ProbIndex[cfg.vocab_size],
-            key_cache = new float[cfg.n_layers * cfg.seq_len * cfg.dim],
-            value_cache = new float[cfg.n_layers * cfg.seq_len * cfg.dim]
-        };
-    }
-
 
     // Transformer and RunState structs, and related memory management
     [StructLayout(LayoutKind.Sequential)]
