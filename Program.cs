@@ -61,6 +61,7 @@ public static class Program
         return (config, weights);
     }
     private static long _rngSeed;
+    static Tokenizer tokenizer;
     static void ErrorUsage()
     {
         Console.WriteLine("Usage:   run <checkpoint> [options]");
@@ -113,59 +114,19 @@ public static class Program
             Console.WriteLine("Cannot use seed=0 because of the rng alg used\n");
             return;
         }
-
         // read in the model.bin file
         (Config config, TransformerWeights weights) = LoadModel(checkpoint);
 
 
         // right now we cannot run for more than config.seq_len steps
         if (steps <= 0 || steps > config.seq_len) steps = config.seq_len;
-
-        // read in the tokenizer.bin file
-        string[] vocab = new string[config.vocab_size];
-        float[] vocabScores = new float[config.vocab_size];
-        int maxTokenLength;
-
-        using (FileStream fs = new FileStream(@"D:\ai.study\llama2.cs-main\tokenizer.bin", FileMode.Open,
-                   FileAccess.Read))
-        using (BinaryReader reader = new BinaryReader(fs))
-        {
-            try
-            {
-                maxTokenLength = reader.ReadInt32();
-
-                for (int i = 0; i < config.vocab_size; i++)
-                {
-                    vocabScores[i] = reader.ReadSingle();
-
-                    int len = reader.ReadInt32();
-                    Span<byte> buffer = stackalloc byte[len]; // stack allocate buffer, assumes len is small
-                    _ = reader.Read(buffer);
-
-                    vocab[i] = Encoding.UTF8.GetString(buffer);
-                }
-            }
-            catch (EndOfStreamException)
-            {
-                Console.Error.WriteLine("failed read");
-                return;
-            }
-        }
-
-
+        tokenizer = new Tokenizer(config);
+        tokenizer.LoadVocab();
         // create and init the application RunState
         RunState state = config.InitializeRunState();
 
         // process the prompt, if any
-        int[]? promptTokens = null;
-        int numPromptTokens = 0;
-        if (!string.IsNullOrEmpty(prompt))
-        {
-            promptTokens = new int[prompt.Length];
-            BpeEncode(prompt, vocab, vocabScores, config.vocab_size, maxTokenLength, ref promptTokens,
-                ref numPromptTokens);
-        }
-
+        (int[]? promptTokens, int numPromptTokens) = tokenizer.EncodePrompt(prompt);
 
         // start the main loop
         int token = 1; // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
@@ -224,7 +185,7 @@ public static class Program
 
             // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
             //在BOS（1）标记之后，句子段解码器去除任何前导空格（参见PR#89）
-            string tokenStr = token == 1 && vocab[next][0] == ' ' ? vocab[next].TrimStart() : vocab[next];
+            string tokenStr = token == 1 && tokenizer.vocab[next][0] == ' ' ? tokenizer.vocab[next].TrimStart() : tokenizer.vocab[next];
             Console.Write(tokenStr);
             token = next;
         }
@@ -601,57 +562,4 @@ public static class Program
         offset += sizeof(float) * (long)size;
         return array;
     }
-
-    // Transformer and RunState structs, and related memory management
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Config
-    {
-        public int dim; // transformer dimension
-        public int hidden_dim; // for ffn layers
-        public int n_layers; // number of layers
-        public int n_heads; // number of query heads
-        public int n_kv_heads; // number of key/value heads (can be < query heads because of multiquery)
-        public int vocab_size; // vocabulary size, usually 256 (byte-level)
-        public int seq_len; // max sequence length
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TransformerWeights
-    {
-        // token embedding table
-        public float[] token_embedding_table; // (vocab_size, dim)
-
-        // weights for rmsnorms
-        public ArraySegment<float> rms_att_weight; // (layer, dim) rmsnorm weights
-
-        public ArraySegment<float> rms_ffn_weight; // (layer, dim)
-
-        // weights for matmuls
-        public ArraySegment<float> wq; // (layer, dim, dim)
-        public ArraySegment<float> wk; // (layer, dim, dim)
-        public ArraySegment<float> wv; // (layer, dim, dim)
-
-        public ArraySegment<float> wo; // (layer, dim, dim)
-
-        // weights for ffn
-        public ArraySegment<float> w1; // (layer, hidden_dim, dim)
-        public ArraySegment<float> w2; // (layer, dim, hidden_dim)
-
-        public ArraySegment<float> w3; // (layer, hidden_dim, dim)
-
-        // final rmsnorm
-        public float[] rms_final_weight; // (dim,)
-
-        // freq_cis for RoPE relatively positional embeddings
-        public float[] freq_cis_real; // (seq_len, head_size/2)
-
-        public float[] freq_cis_imag; // (seq_len, head_size/2)
-
-        // (optional) classifier weights for the logits, on the last layer
-        public float[] wcls;
-    }
-
-
-
-
 }
