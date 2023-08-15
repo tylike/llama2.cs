@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Numerics;
 #pragma warning disable CA2014
 
 namespace llama2.cs;
@@ -16,8 +17,13 @@ public class Engine
     int steps = 256;
     string checkpoint = @"D:\ai.study\llama2.cs-main\stories15M.bin";
     int configVocabSize;
-    public void Setup()
+    public void Setup(string modelFile = null, string vocabFile = null)
     {
+        if (!string.IsNullOrEmpty(modelFile))
+        {
+            checkpoint = modelFile;
+        }
+
         SetSeed((uint)DateTime.UtcNow.Ticks);
         if (_rngSeed == 0)
         {
@@ -32,11 +38,11 @@ public class Engine
         configVocabSize = config.vocab_size;
         // right now we cannot run for more than config.seq_len steps
         if (steps <= 0 || steps > config.seq_len) steps = config.seq_len;
-        tokenizer = new Tokenizer(config);
+        tokenizer = new Tokenizer(config, vocabFile);
         tokenizer.LoadVocab();
     }
 
-    public void Run(string prompt = "what's your name?")
+    public void Run(string prompt = "小明说他很爱学习")
     {
         // create and init the application RunState
         RunState state = config.InitializeRunState();
@@ -45,8 +51,7 @@ public class Engine
         // start the main loop
         int token = 1; // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
         int pos = 0; // position in the sequence
-        Stopwatch timer = new Stopwatch();
-        timer.Start();
+        var timer = Stopwatch.StartNew();
         while (pos < steps)
         {
             // forward the transformer to get logits for the next token
@@ -173,32 +178,58 @@ public class Engine
         if (a.Prob < b.Prob) return 1;
         return 0;
     }
-
+    Random rnd = new Random();
     int SampleTopp(float[] probabilities, ProbIndex[] probindex)
     {
+        //得到的概率数据与词汇表中的索引对应
         for (int i = 0; i < configVocabSize; i++)
         {
             probindex[i].Index = i;
             probindex[i].Prob = probabilities[i];
         }
-
-        Array.Sort(probindex, Compare);
+        //按概率排序:从大到小
+        //Array.Sort(probindex, Compare);
+        var sorted = probindex.OrderBy(t => t.Prob);
 
         float cumulativeProb = 0.0f;
         int lastIdx = 0;
-        for (int i = 0; i < configVocabSize; i++)
+        int j = 0;
+        foreach (var item in sorted)
         {
-            cumulativeProb += probindex[i].Prob;
+
+            cumulativeProb += item.Prob;
             if (cumulativeProb > topp)
             {
-                lastIdx = i;
+                lastIdx = j;
                 break;
             }
+            j++;
+
         }
+        //过滤掉低概率的标记，直到我们达到top-p阈值
+        //for (int i = 0; i < configVocabSize; i++)
+        //{
+        //    cumulativeProb += probindex[i].Prob;
+        //    if (cumulativeProb > topp)
+        //    {
+        //        lastIdx = i;
+        //        break;
+        //    }
+        //}
+
+        //var max = 300;
+        //if (probindex.Length < max)
+        //{
+        //    max = probindex.Length;
+        //}
+        //return probindex[rnd.Next(max)].Index;
+
+        //var info = string.Join("\n", probindex.Take(300).Select(t => tokenizer.Decode(t.Index) + ":" + t.Prob));
+        //随机选择一个标记
 
         float r = RandomF32() * cumulativeProb;
         float cdf = 0.0f;
-        for (int i = 0; i <= lastIdx; i++)
+        for (var i = 0; i <= lastIdx; i++)
         {
             cdf += probindex[i].Prob;
             if (r < cdf) return probindex[i].Index;
@@ -210,6 +241,10 @@ public class Engine
 
     private static void Accum(float[] a, float[] b, int size)
     {
+        //Possible code to optimize the selected code to be faster by utilizing Vectorized addition instead of a for loop
+        //var vecA = new Vector<float>(a);
+        //Vector<float> vecB = new Vector<float>(b);
+        //Vector.Add(vecA, vecB).CopyTo(a, 0);
         for (int i = 0; i < size; i++) a[i] += b[i];
     }
 

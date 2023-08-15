@@ -3,13 +3,23 @@ using System.Text;
 #pragma warning disable CA2014
 
 namespace llama2.cs;
+class ModelFile
+{
+    public string File { get; set; }
+    public string Vocab { get; set; }
+}
 public static class Program
 {
+    static ModelFile zh = new ModelFile { File = @"D:\ai.study\llama2.cs-main\stories15M-llama2-enzh.bin", Vocab = @"D:\ai.study\llama2.c-zh-main\tokenizers\llama2enzh\tokenizer.bin" };
+    static ModelFile baichuan = new ModelFile { File = @"D:\ai.study\llama2.cs-main\stories15M-baichuan.bin", Vocab = @"D:\ai.study\llama2.c-zh-main\tokenizers\baichuan\tokenizer.bin" };
+
     public static void Main(string[] args)
     {
+        var modelFile = baichuan;
         var engine = new Engine();
-        engine.Setup();
+        engine.Setup(modelFile.File, modelFile.Vocab);
         engine.Run();
+        Console.ReadKey();
     }
     static void ErrorUsage()
     {

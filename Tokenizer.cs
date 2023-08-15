@@ -10,9 +10,14 @@ public class Tokenizer
     public float[] vocabScores { get; private set; }
     public int maxTokenLength { get; private set; }
     public Config config { get; private set; }
-    public Tokenizer(Config config)
+    string vocabPath = @"D:\ai.study\llama2.cs-main\tokenizer.bin";
+    public Tokenizer(Config config, string vocabPath = null)
     {
         this.config = config;
+        if (vocabPath != null)
+        {
+            this.vocabPath = vocabPath;
+        }
     }
     public void LoadVocab()
     {
@@ -20,7 +25,7 @@ public class Tokenizer
         vocabScores = new float[config.vocab_size];
         maxTokenLength = 0;
 
-        using (FileStream fs = new FileStream(@"D:\ai.study\llama2.cs-main\tokenizer.bin", FileMode.Open,
+        using (FileStream fs = new FileStream(vocabPath, FileMode.Open,
                    FileAccess.Read))
         using (BinaryReader reader = new BinaryReader(fs))
         {
@@ -70,6 +75,11 @@ public class Tokenizer
         return nxt;
         //return token == 1 && vocab[next][0] == ' ' ? vocab[next].TrimStart() : vocab[next];
     }
+    public string Decode(int token)
+    {
+        return vocab[token];
+    }
+
 
     private static void BpeEncode(string text, string[] vocab, float[] vocabScores, int vocabSize, int maxTokenLength,
         ref int[] tokens, ref int nTokens)
